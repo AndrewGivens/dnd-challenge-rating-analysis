@@ -8,7 +8,7 @@ The analysis is exploratory. A statistical difference from the 2014 SRD baseline
 
 ## Project status
 
-This repository currently contains the acquisition workflow. The source coverage, usable sample size, missingness, and source-specific reuse terms still need to be reviewed before fixing the final scope or publishing data.
+This repository contains a reproducible acquisition workflow and data-quality diagnostics. The final source set and source-specific reuse terms still need review before publishing a dataset or fixing the analysis scope.
 
 ## Data source and method
 
@@ -39,23 +39,32 @@ On Windows PowerShell, activate with:
 ## Acquire data
 
 ```bash
-python scripts/acquire_open5e.py
+python scripts/acquire_open5e.py --document-key srd-2014 --document-key ccdx
 ```
 
-To acquire one document only (for example, the 2024 SRD):
+Each `--document-key` is acquired separately. The script follows pagination, saves raw response pages in a timestamped folder, and writes a flattened CSV plus a manifest for each document. For a small feasibility pull, cap pages:
 
 ```bash
-python scripts/acquire_open5e.py --document-key srd-2024
+python scripts/acquire_open5e.py --document-key srd-2024 --max-pages 1
 ```
 
-The script saves raw pages to `data/raw/open5e/` and the flattened table to `data/processed/creatures.csv`. These paths are git-ignored. Use `--help` to see options for a smaller feasibility pull, output directory, and request delay.
+Complete pulls are named `data/processed/creatures_<document-key>.csv` with a matching `.manifest.json`. Incomplete pulls made with `--max-pages` get a `_partial` suffix so they do not overwrite complete data. Raw pages are saved beneath `data/raw/open5e/<document-key>/<run-timestamp>/`. These paths are git-ignored.
 
-The script's output filename is `creatures.csv`; if you run it with a document filter, consider renaming or moving the output before acquiring another source so the first CSV is preserved. Review the resulting table for:
+Review source coverage, missing values, duplicates, and numeric summaries across chosen sources:
 
-- counts by source document and publisher;
-- missing challenge rating, hit points, and armor class;
-- duplicates and variants;
-- whether selected official and third-party sources have enough comparable records.
+```bash
+python scripts/validate_data.py data/processed/creatures_srd-2014.csv data/processed/creatures_ccdx.csv --report data/processed/validation.json
+```
+
+The validator checks the 200 observation target, key uniqueness, repeated names within a source, numeric fields, source and publisher counts, missingness, and whether each acquisition manifest indicates a complete pull. It reports warnings without deleting or deduplicating records; review flagged cases and document cleaning decisions.
+
+Before adding a damage feature, inspect how much of the source has structured attack information:
+
+```bash
+python scripts/inspect_attack_coverage.py --raw-dir data/raw/open5e --report data/processed/attack_coverage.json
+```
+
+This diagnostic screens action descriptions, counts structured attack and damage fields and save-based damage text, and shows examples where attack-like language lacks structured fields. Text matching is only a screening cue; review examples manually. It does not calculate damage per round.
 
 ## Planned analysis
 
@@ -64,14 +73,16 @@ The script's output filename is `creatures.csv`; if you run it with a document f
 3. Fit a baseline model using official monsters only, then compare third-party listed CR with model predictions. Keep training and evaluation choices explicit, and interpret residuals as deviations from this baseline rather than judgments of game balance.
 4. Investigate a small number of high-residual records and report data limitations.
 
-Damage-per-round parsing is intentionally not part of the first acquisition pass. Attack descriptions vary in structure, so add a damage measure only after documenting a reliable parsing and validation approach.
+Damage-per-round parsing is intentionally not part of the first analysis pass. The earlier exploration found missing or inconsistent structured attack fields and save-based damage embedded in prose. Add a damage measure only after defining “per round,” validating the parser against reviewed examples, and documenting cases it cannot interpret.
 
 ## Repository layout
 
 ```text
-scripts/acquire_open5e.py   API acquisition and flattening
-data/raw/open5e/            locally cached API pages (ignored by Git)
-data/processed/             locally generated CSV (ignored by Git)
+scripts/acquire_open5e.py          paginated API acquisition and flattening
+scripts/validate_data.py           coverage and data-quality report
+scripts/inspect_attack_coverage.py attack-field diagnostics from cached raw pages
+data/raw/open5e/                   locally cached API pages (ignored by Git)
+data/processed/                    CSVs, manifests, and reports (ignored by Git)
 ```
 
 ## References
