@@ -9,13 +9,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import pandas as pd
 import requests
 
 
 API_URL = "https://api.open5e.com/v2/creatures/"
+DOCUMENTS_URL = "https://api.open5e.com/v2/documents/"
 USER_AGENT = "dnd-challenge-rating-analysis/0.2 (student data curation project)"
 OUTPUT_COLUMNS = [
     "key",
@@ -37,6 +38,8 @@ OUTPUT_COLUMNS = [
     "document_name",
     "document_display_name",
     "document_permalink",
+    "document_license_keys",
+    "document_license_names",
     "publisher_key",
     "publisher_name",
     "retrieved_at_utc",
@@ -53,11 +56,16 @@ def display_name(value: Any) -> Any:
     return value.get("name") if isinstance(value, dict) else value
 
 
-def flatten_creature(creature: dict[str, Any], retrieved_at: str) -> dict[str, Any]:
+def flatten_creature(
+    creature: dict[str, Any], retrieved_at: str, document_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Select analysis fields while retaining source and publisher provenance."""
     document = creature.get("document") or {}
     publisher = document.get("publisher") or {}
     abilities = creature.get("ability_scores") or {}
+    licenses = (document_metadata or {}).get("licenses") or document.get("licenses") or []
+    license_keys = [license.get("key") for license in licenses if license.get("key")]
+    license_names = [license.get("name") for license in licenses if license.get("name")]
 
     return {
         "key": creature.get("key"),
@@ -81,10 +89,23 @@ def flatten_creature(creature: dict[str, Any], retrieved_at: str) -> dict[str, A
         "document_name": document.get("name"),
         "document_display_name": document.get("display_name"),
         "document_permalink": document.get("permalink"),
+        "document_license_keys": ";".join(license_keys),
+        "document_license_names": ";".join(license_names),
         "publisher_key": publisher.get("key"),
         "publisher_name": publisher.get("name"),
         "retrieved_at_utc": retrieved_at,
     }
+
+
+def fetch_document_metadata(session: requests.Session, document_key: str) -> dict[str, Any]:
+    """Get the API's license and attribution metadata for one source document."""
+    url = f"{DOCUMENTS_URL}{quote(document_key, safe='')}/"
+    response = session.get(url, timeout=60)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected document metadata response for {document_key}")
+    return payload
 
 
 def fetch_document(
@@ -103,6 +124,7 @@ def fetch_document(
     processed_dir = output_dir / "processed"
     raw_dir.mkdir(parents=True, exist_ok=True)
     processed_dir.mkdir(parents=True, exist_ok=True)
+    document_metadata = fetch_document_metadata(session, document_key) if document_key else {}
 
     next_url: str | None = API_URL
     page_number = 1
@@ -148,7 +170,7 @@ def fetch_document(
             if delay:
                 time.sleep(delay)
 
-    rows = [flatten_creature(creature, retrieved_at) for creature in creatures]
+    rows = [flatten_creature(creature, retrieved_at, document_metadata) for creature in creatures]
     frame = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     complete = next_url is None
     suffix = "_partial" if not complete else ""
@@ -159,6 +181,10 @@ def fetch_document(
     manifest = {
         "api_endpoint": API_URL,
         "document_key_filter": document_key,
+        "document_name": document_metadata.get("name"),
+        "document_display_name": document_metadata.get("display_name"),
+        "publisher": document_metadata.get("publisher"),
+        "licenses": document_metadata.get("licenses", []),
         "api_total_reported": api_total,
         "records_acquired": len(frame),
         "page_count": pages_fetched,
@@ -180,7 +206,7 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=100, help="records per page (default: 100)")
     parser.add_argument("--max-pages", type=int, help="cap pages per document for a partial feasibility pull")
-    parser.add_argument("--delay", type=float, default=0.2, help="pause between page requests in seconds")
+    parser.add_argument("--delay", type=float, default=1.0, help="pause between page requests in seconds (default: 1)")
     parser.add_argument("--output-dir", type=Path, default=Path("data"), help="data directory (default: data)")
     args = parser.parse_args()
 
@@ -212,6 +238,10 @@ def main() -> None:
             f"{document_key or 'all sources'}: {len(frame)} rows; "
             f"API reports {manifest['api_total_reported']}; complete={manifest['complete']}"
         )
+        if manifest["licenses"]:
+            print("Licenses: " + "; ".join(license["name"] for license in manifest["licenses"]))
+        else:
+            print("License metadata unavailable for this pull; review each document before redistribution.")
         print(f"Saved {manifest['csv_path']}")
 
 

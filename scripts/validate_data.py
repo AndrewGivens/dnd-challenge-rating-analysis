@@ -169,11 +169,26 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
             for source, count in frame["publisher_name"].fillna("(missing)").value_counts().items()
         ]
 
+    license_counts: dict[str, int] = {}
+    missing_license_rows = 0
+    if "document_license_keys" in frame.columns:
+        missing_license_rows = int(frame["document_license_keys"].fillna("").str.strip().eq("").sum())
+        for value in frame["document_license_keys"].dropna():
+            for license_key in str(value).split(";"):
+                if license_key:
+                    license_counts[license_key] = license_counts.get(license_key, 0) + 1
+        if missing_license_rows:
+            warnings.append(
+                f"{missing_license_rows} rows lack API license metadata; check the source documents manually"
+            )
+
     for manifest in manifests:
         expected = manifest.get("api_total_reported")
         acquired = manifest.get("records_acquired")
         if not manifest.get("complete", False):
             warnings.append(f"Acquisition was partial: {manifest.get('manifest_path')}")
+        if manifest.get("document_key_filter") and not manifest.get("licenses"):
+            warnings.append(f"No license metadata in acquisition manifest: {manifest.get('manifest_path')}")
         if expected is not None and acquired != expected:
             warnings.append(
                 f"Acquisition count {acquired} differs from API total {expected}: "
@@ -188,6 +203,8 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
         "source_document_count": len(source_counts),
         "source_counts": source_counts,
         "publisher_counts": publisher_counts,
+        "license_key_counts": license_counts,
+        "missing_license_rows": missing_license_rows,
         "missingness": missingness,
         "missing_identity_values": missing_identity,
         "numeric_summary": numeric_summary,

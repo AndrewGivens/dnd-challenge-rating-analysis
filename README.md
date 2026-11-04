@@ -14,7 +14,7 @@ This repository contains a reproducible acquisition workflow and data-quality di
 
 The acquisition script uses Open5e's current v2 `/creatures/` endpoint. It follows the API's `next` pagination links, saves each raw JSON page locally, and writes a flattened CSV for inspection. The CSV includes source document and publisher metadata where provided, along with CR, HP, AC, and six ability scores.
 
-Open5e aggregates material with different licenses. API availability does not by itself mean that all content can be republished. Review the license and attribution information for each source document before committing any downloaded data. The downloaded files are ignored by Git by default.
+Open5e aggregates material with different licenses. The API's license metadata is a starting point for review, not a blanket redistribution grant. Check the source's license and attribution requirements before committing downloaded content. The downloaded files are ignored by Git by default.
 
 ## Set up
 
@@ -42,7 +42,7 @@ On Windows PowerShell, activate with:
 python scripts/acquire_open5e.py --document-key srd-2014 --document-key ccdx
 ```
 
-Each `--document-key` is acquired separately. The script follows pagination, saves raw response pages in a timestamped folder, and writes a flattened CSV plus a manifest for each document. For a small feasibility pull, cap pages:
+Each `--document-key` is acquired separately. The script follows pagination with a one-second pause between page requests, saves raw response pages in a timestamped folder, and writes a flattened CSV plus a manifest for each document. It also retrieves that document's Open5e license metadata and records license keys/names in the manifest and CSV. Unfiltered acquisition (the default) does not perform per-document license lookups; use selected document keys for a final, reviewable dataset. For a small feasibility pull, cap pages:
 
 ```bash
 python scripts/acquire_open5e.py --document-key srd-2024 --max-pages 1
@@ -56,7 +56,7 @@ Review source coverage, missing values, duplicates, and numeric summaries across
 python scripts/validate_data.py data/processed/creatures_srd-2014.csv data/processed/creatures_ccdx.csv --report data/processed/validation.json
 ```
 
-The validator checks the 200 observation target, key uniqueness, repeated names within a source, numeric fields, source and publisher counts, missingness, and whether each acquisition manifest indicates a complete pull. It reports warnings without deleting or deduplicating records; review flagged cases and document cleaning decisions.
+The validator checks the 200 observation target, key uniqueness, repeated names within a source, numeric fields, source, publisher, and license counts, missingness, and whether each acquisition manifest indicates a complete pull. It reports warnings without deleting or deduplicating records; review flagged cases and document cleaning decisions.
 
 Before adding a damage feature, inspect how much of the source has structured attack information:
 
