@@ -1,85 +1,100 @@
 # D&D Challenge Rating Analysis
 
-An undergraduate data acquisition and exploratory analysis project asking:
+I wanted to find out whether monsters from third-party D&D books tend to have challenge ratings (CRs) similar to official monsters with comparable basic stats. This project compares four Kobold Press source books with monsters from the 2014 Wizards of the Coast System Reference Document (SRD).
 
-> Among monsters in selected third-party 5e source documents, how do listed challenge ratings compare with ratings predicted from hit points, armor class, and ability scores in the official 2014 SRD?
+The project combines API acquisition, data checks, exploratory analysis, and a simple statistical baseline. It does **not** test whether CR predicts real combat difficulty or decide whether any monster is misrated.
 
-The analysis is exploratory. A statistical difference from the 2014 SRD baseline does not establish that a monster's rating is incorrect or unfair.
+## Dataset and scope
 
-## Project status
+The Open5e pull used for this analysis was retrieved on **2026-11-06** and contains **1,852 monsters**:
 
-This repository contains a reproducible acquisition workflow and data-quality diagnostics. The final source set and source-specific reuse terms still need review before publishing a dataset or fixing the analysis scope.
+| Source | Records |
+| --- | ---: |
+| 2014 SRD | 325 |
+| Creature Codex | 356 |
+| Tome of Beasts | 391 |
+| Tome of Beasts 2 | 383 |
+| Tome of Beasts 3 | 397 |
 
-## Data source and method
+The four third-party sources are all from Kobold Press, so the results are about these books—not third-party publishers generally. The records include listed CR, hit points, armor class, six ability scores, source and publisher details, and license metadata.
 
-The acquisition script uses Open5e's current v2 `/creatures/` endpoint. It follows the API's `next` pagination links, saves each raw JSON page locally, and writes a flattened CSV for inspection. The CSV includes source document and publisher metadata where provided, along with CR, HP, AC, and six ability scores.
+For this pull, validation found no missing required values or duplicate API keys. The counts describe the records fetched on the date above; a later API pull may differ.
 
-Open5e aggregates material with different licenses. The API's license metadata is a starting point for review, not a blanket redistribution grant. Check the source's license and attribution requirements before committing downloaded content. The downloaded files are ignored by Git by default.
+I use the documented Open5e v2 API. It requires no API key. The acquisition script saves timestamped raw JSON pages, follows the API’s pagination links, and writes a CSV and manifest for each selected source. Downloaded data and reports stay local; the repository contains scripts and aggregate figures. Source documents have separate license and attribution terms, so check the terms for each source before reusing or redistributing its content.
 
-## Set up
+Before collecting data, I checked Open5e’s [site robots.txt](https://open5e.com/robots.txt), the [API host robots.txt](https://api.open5e.com/robots.txt), its [legal page](https://open5e.com/legal/), and the [Creature Codex](https://open5e.com/sources/ccdx) and [Tome of Beasts](https://open5e.com/sources/tob) source pages. The robots files have no rule explicitly allowing or disallowing API access; I did not treat that as permission. Requests pause for one second between pages, and raw responses are cached to avoid repeat requests.
 
-Use Python 3.10 or newer.
+## What I found
+
+Median listed CR is 2 for the 2014 SRD and 5 for Kobold Press. Median hit points are 45 and 93, while median armor class is 13 and 15. These differences show that the two collections have different mixes of monsters.
+
+![Challenge-rating mix by publisher group](figures/cr-distribution.png)
+
+Hit points tend to rise with CR in both collections (Spearman correlations: 0.97 for the SRD and 0.93 for Kobold Press). The CR–AC correlations are 0.69 and 0.70.
+
+![Hit points and armor class by listed CR](figures/stats-vs-cr.png)
+
+For a rough comparison of listed CRs, I fit a linear regression to the 2014 SRD only. It predicts log(1 + CR) from log(1 + hit points), armor class, and six ability scores. Five-fold cross-validation on the official records gave an R-squared of 0.90 on the log-CR scale and a mean absolute error of about 1.15 CR after converting predictions back to the CR scale.
+
+For Kobold Press overall, the median difference between listed CR and the model prediction is about −0.01. This residual is **not** a DMG calculation or a measure of correctness: positive values only mean that listed CR is higher than this model predicts from the included stats. Official records use out-of-fold predictions; third-party records are compared with a model fit to all official records.
+
+![Listed CR minus the SRD model prediction, by source](figures/baseline-residuals.png)
+
+## Limits of the comparison
+
+The 2014 Dungeon Master’s Guide’s monster-building procedure estimates defensive CR from effective hit points and AC, and offensive CR from damage per round and attack bonus or save DC, with adjustments for relevant traits ([Dungeon Master’s Guide](https://www.dndbeyond.com/sources/dnd/dmg-2014)). My model does not reproduce that procedure: it uses raw HP, AC, and ability scores, and leaves out damage and special traits. So the residuals describe differences from a simple statistical baseline, not deviations from the official method.
+
+The official rules also define CR relative to an appropriately equipped, well-rested party of four ([2014 Basic Rules](https://www.dndbeyond.com/sources/dnd/basic-rules-2014/monsters)). I don’t have playtest or combat-outcome data, so this project can’t tell whether CR predicts how difficult a fight will feel in actual play. The 2014 SRD is one baseline, and Open5e may not include every monster from either publisher.
+
+I considered estimating damage per round from action descriptions, but the fields are inconsistent. A text-based screen flagged 2,561 attack-like actions; 147 lacked structured attack data. Those are heuristic counts, not verified attacks, and some may not deal damage. I left damage out rather than treat an incomplete parser as reliable.
+
+## Reproduce the project
+
+Use Python 3.10 or newer. Create and activate a virtual environment, install dependencies, then run the commands below from the repository root. The scripts require no API key.
 
 ```bash
 python -m venv .venv
 ```
 
-Activate the environment, then install dependencies:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-On Windows PowerShell, activate with:
+Activate it in PowerShell:
 
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-## Acquire data
+Or on macOS/Linux:
 
 ```bash
-python scripts/acquire_open5e.py --document-key srd-2014 --document-key ccdx
+source .venv/bin/activate
 ```
 
-Each `--document-key` is acquired separately. The script follows pagination with a one-second pause between page requests, saves raw response pages in a timestamped folder, and writes a flattened CSV plus a manifest for each document. It also retrieves that document's Open5e license metadata and records license keys/names in the manifest and CSV. Unfiltered acquisition (the default) does not perform per-document license lookups; use selected document keys for a final, reviewable dataset. For a small feasibility pull, cap pages:
+Then install dependencies:
 
 ```bash
-python scripts/acquire_open5e.py --document-key srd-2024 --max-pages 1
+python -m pip install -r requirements.txt
 ```
 
-Complete pulls are named `data/processed/creatures_<document-key>.csv` with a matching `.manifest.json`. Incomplete pulls made with `--max-pages` get a `_partial` suffix so they do not overwrite complete data. Raw pages are saved beneath `data/raw/open5e/<document-key>/<run-timestamp>/`. These paths are git-ignored.
-
-Review source coverage, missing values, duplicates, and numeric summaries across chosen sources:
+From the repository root, acquire the five sources, validate them, review attack-field coverage, and generate the analysis:
 
 ```bash
-python scripts/validate_data.py data/processed/creatures_srd-2014.csv data/processed/creatures_ccdx.csv --report data/processed/validation.json
-```
+python scripts/acquire_open5e.py \
+  --document-key srd-2014 --document-key ccdx \
+  --document-key tob --document-key tob2 --document-key tob3
 
-The validator checks the 200 observation target, key uniqueness, repeated names within a source, numeric fields, source, publisher, and license counts, missingness, and whether each acquisition manifest indicates a complete pull. It reports warnings without deleting or deduplicating records; review flagged cases and document cleaning decisions.
+python scripts/validate_data.py \
+  data/processed/creatures_srd-2014.csv \
+  data/processed/creatures_ccdx.csv \
+  data/processed/creatures_tob.csv \
+  data/processed/creatures_tob2.csv \
+  data/processed/creatures_tob3.csv \
+  --report data/processed/validation.json
 
-Before adding a damage feature, inspect how much of the source has structured attack information:
+python scripts/inspect_attack_coverage.py \
+  --raw-dir data/raw/open5e \
+  --document-key srd-2014 --document-key ccdx \
+  --document-key tob --document-key tob2 --document-key tob3 \
+  --report data/processed/attack_coverage.json
 
-```bash
-python scripts/inspect_attack_coverage.py --raw-dir data/raw/open5e --document-key srd-2014 --document-key ccdx --document-key tob --document-key tob2 --document-key tob3 --report data/processed/attack_coverage.json
-```
-
-This diagnostic screens action descriptions, counts structured attack and damage fields and save-based damage text, and shows examples where attack-like language lacks structured fields. Text matching is only a screening cue; review examples manually. It does not calculate damage per round.
-
-## Analysis design
-
-1. Define a comparison set with an explicit official baseline edition and selected third-party documents.
-2. Describe coverage, missingness, CR distributions, and HP/AC relationships.
-3. Fit a baseline model using official monsters only, then compare third-party listed CR with model predictions. Keep training and evaluation choices explicit, and interpret residuals as deviations from this baseline rather than judgments of game balance.
-4. Investigate a small number of high-residual records and report data limitations.
-
-Damage-per-round parsing is intentionally not part of the first analysis pass. The earlier exploration found missing or inconsistent structured attack fields and save-based damage embedded in prose. Add a damage measure only after defining “per round,” validating the parser against reviewed examples, and documenting cases it cannot interpret.
-
-## Exploratory analysis
-
-After acquiring the five selected sources and reviewing the validation and attack-coverage reports, run:
-
-```bash
 python scripts/analyze_monsters.py \
   data/processed/creatures_srd-2014.csv \
   data/processed/creatures_ccdx.csv \
@@ -88,26 +103,21 @@ python scripts/analyze_monsters.py \
   data/processed/creatures_tob3.csv
 ```
 
-The analysis writes three PNG figures to `figures/` and an EDA summary plus a residual review table to the ignored `data/processed/` directory. The model predicts log-transformed CR from hit points, armor class, and six ability scores. Official SRD records receive five-fold out-of-fold predictions; third-party records are compared to a model fit on all official records. Residuals are exploratory deviations from this baseline, not ratings of balance or correctness. Only 9 of 1,527 Kobold Press records extend beyond the official training range on at least one model feature; interpretation should still be cautious because the linear model is deliberately simple.
+The acquisition script defaults to 100 records per page and a one-second delay between pages. `--max-pages` makes a partial feasibility pull; partial files are labeled so they aren’t confused with complete pulls. Open5e can change over time, so later pulls may have different counts; manifests record the retrieval time and API totals.
 
-## Repository layout
+The validator reports coverage, missingness, numeric summaries, duplicates, license metadata, and whether each manifest records a complete pull. It flags issues but does not silently delete records. The attack-coverage script reviews cached pages; it does not estimate damage per round. The analysis writes figures to `figures/` and an EDA summary plus residual-review table to `data/processed/`.
 
-```text
-scripts/acquire_open5e.py          paginated API acquisition and flattening
-scripts/validate_data.py           coverage and data-quality report
-scripts/inspect_attack_coverage.py attack-field diagnostics from cached raw pages
-scripts/analyze_monsters.py        EDA summaries, baseline model, and figures
-figures/                            derived aggregate plots
-data/raw/open5e/                   locally cached API pages (ignored by Git)
-data/processed/                    CSVs, manifests, and reports (ignored by Git)
-```
+## Repository contents
+
+- `scripts/acquire_open5e.py` — paginated API acquisition and CSV creation
+- `scripts/validate_data.py` — completeness and data-quality report
+- `scripts/inspect_attack_coverage.py` — diagnostic screen of attack-related fields
+- `scripts/analyze_monsters.py` — EDA summaries, model comparison, and figures
+- `figures/` — aggregate figures generated by the analysis
+- `data/raw/` and `data/processed/` — local acquisition files and reports; ignored by Git
 
 ## References
 
 - [Open5e API documentation](https://open5e.com/api-docs)
 - [Open5e source documents](https://open5e.com/sources)
-- [Open5e API repository license notes](https://github.com/open5e/open5e-api/blob/staging/LICENSE.md)
-
-## Reproducibility notes
-
-The acquisition script records a retrieval timestamp and the API URL in each raw page. The API is maintained over time, so rerunning it can produce different records. Record the retrieval date and preserve the raw pages for the version used in the analysis. Do not commit API keys or downloaded content unless the applicable source terms permit redistribution.
+- [Open5e legal page](https://open5e.com/legal/)
