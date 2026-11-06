@@ -169,6 +169,11 @@ def create_figures(frame: pd.DataFrame, figures_dir: Path) -> None:
     cr_ticks = np.array([0, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 30])
     for ax in axes:
         ax.set_xticks(np.log1p(cr_ticks), labels=["0", "1/8", "1/4", "1/2", "1", "2", "4", "8", "16", "30"])
+        # The fractional CR values bunch together near zero on a log1p scale.
+        # Angled, smaller labels keep them readable without dropping any ticks.
+        ax.tick_params(axis="x", labelrotation=60, labelsize=7)
+        for tick_label in ax.get_xticklabels():
+            tick_label.set_horizontalalignment("right")
         ax.set_xlabel("Listed challenge rating (log1p-spaced axis)")
         ax.grid(axis="y", color="#d9d9d9", linewidth=0.6, alpha=0.7)
     axes[0].set_title("Hit points and CR")
