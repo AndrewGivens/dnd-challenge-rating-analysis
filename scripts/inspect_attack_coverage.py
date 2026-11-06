@@ -49,8 +49,12 @@ def has_structured_damage(action: dict[str, Any]) -> bool:
     return bool(action.get("damage_dice")) or action.get("damage_bonus") is not None
 
 
-def inspect(raw_dir: Path, max_examples: int) -> dict[str, Any]:
+def inspect(raw_dir: Path, max_examples: int, document_keys: set[str] | None = None) -> dict[str, Any]:
     files = sorted(raw_dir.rglob("page_*.json"))
+    if document_keys:
+        # Ignore legacy one-off caches at the root of raw_dir; selected pulls
+        # are stored under <document-key>/<timestamp>/page_*.json.
+        files = [path for path in files if path.parent.parent.name in document_keys]
     if not files:
         raise FileNotFoundError(f"No cached page_*.json files under {raw_dir}")
 
@@ -61,9 +65,11 @@ def inspect(raw_dir: Path, max_examples: int) -> dict[str, Any]:
     for path in files:
         payload = json.loads(path.read_text(encoding="utf-8"))
         for creature in payload.get("results", []):
-            creature_count += 1
             document = creature.get("document") or {}
             source = document.get("key") or path.parents[1].name
+            if document_keys and source not in document_keys:
+                continue
+            creature_count += 1
             actions = creature.get("actions") or []
             for action in actions:
                 if not isinstance(action, dict):
@@ -115,6 +121,11 @@ def inspect(raw_dir: Path, max_examples: int) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=Path("data/raw/open5e"))
+    parser.add_argument(
+        "--document-key",
+        action="append",
+        help="limit inspection to selected source documents; repeat as needed",
+    )
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--report", type=Path, help="optional path for a JSON report")
     args = parser.parse_args()
@@ -122,7 +133,7 @@ def main() -> None:
         parser.error("--max-examples cannot be negative")
 
     try:
-        report = inspect(args.raw_dir, args.max_examples)
+        report = inspect(args.raw_dir, args.max_examples, set(args.document_key or []))
     except (FileNotFoundError, json.JSONDecodeError) as error:
         parser.error(str(error))
 

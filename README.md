@@ -61,12 +61,12 @@ The validator checks the 200 observation target, key uniqueness, repeated names 
 Before adding a damage feature, inspect how much of the source has structured attack information:
 
 ```bash
-python scripts/inspect_attack_coverage.py --raw-dir data/raw/open5e --report data/processed/attack_coverage.json
+python scripts/inspect_attack_coverage.py --raw-dir data/raw/open5e --document-key srd-2014 --document-key ccdx --document-key tob --document-key tob2 --document-key tob3 --report data/processed/attack_coverage.json
 ```
 
 This diagnostic screens action descriptions, counts structured attack and damage fields and save-based damage text, and shows examples where attack-like language lacks structured fields. Text matching is only a screening cue; review examples manually. It does not calculate damage per round.
 
-## Planned analysis
+## Analysis design
 
 1. Define a comparison set with an explicit official baseline edition and selected third-party documents.
 2. Describe coverage, missingness, CR distributions, and HP/AC relationships.
@@ -75,12 +75,29 @@ This diagnostic screens action descriptions, counts structured attack and damage
 
 Damage-per-round parsing is intentionally not part of the first analysis pass. The earlier exploration found missing or inconsistent structured attack fields and save-based damage embedded in prose. Add a damage measure only after defining “per round,” validating the parser against reviewed examples, and documenting cases it cannot interpret.
 
+## Exploratory analysis
+
+After acquiring the five selected sources and reviewing the validation and attack-coverage reports, run:
+
+```bash
+python scripts/analyze_monsters.py \
+  data/processed/creatures_srd-2014.csv \
+  data/processed/creatures_ccdx.csv \
+  data/processed/creatures_tob.csv \
+  data/processed/creatures_tob2.csv \
+  data/processed/creatures_tob3.csv
+```
+
+The analysis writes three PNG figures to `figures/` and an EDA summary plus a residual review table to the ignored `data/processed/` directory. The model predicts log-transformed CR from hit points, armor class, and six ability scores. Official SRD records receive five-fold out-of-fold predictions; third-party records are compared to a model fit on all official records. Residuals are exploratory deviations from this baseline, not ratings of balance or correctness. Only 9 of 1,527 Kobold Press records extend beyond the official training range on at least one model feature; interpretation should still be cautious because the linear model is deliberately simple.
+
 ## Repository layout
 
 ```text
 scripts/acquire_open5e.py          paginated API acquisition and flattening
 scripts/validate_data.py           coverage and data-quality report
 scripts/inspect_attack_coverage.py attack-field diagnostics from cached raw pages
+scripts/analyze_monsters.py        EDA summaries, baseline model, and figures
+figures/                            derived aggregate plots
 data/raw/open5e/                   locally cached API pages (ignored by Git)
 data/processed/                    CSVs, manifests, and reports (ignored by Git)
 ```
