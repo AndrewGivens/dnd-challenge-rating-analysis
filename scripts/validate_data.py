@@ -43,6 +43,8 @@ def parse_number(value: Any, *, allow_fraction: bool = False) -> float:
     if pd.isna(value):
         return float("nan")
     try:
+        # Some CRs are written as fractions such as "1/2"; other fields are
+        # expected to be ordinary numeric values.
         if allow_fraction and isinstance(value, str) and "/" in value:
             return float(Fraction(value.strip()))
         return float(value)
@@ -61,6 +63,8 @@ def load_inputs(paths: list[Path]) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         frame["_input_file"] = str(path)
         frames.append(frame)
 
+        # Acquisition writes a manifest beside each complete CSV. Reading it
+        # here lets validation compare the saved rows with the API's reported count.
         manifest_path = path.with_name(f"{path.stem}.manifest.json")
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -73,8 +77,11 @@ def load_inputs(paths: list[Path]) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
 
 
 def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows: int) -> dict[str, Any]:
+    # This report flags issues for review; it deliberately does not drop or
+    # rewrite records, because duplicates and unusual values need human review.
     errors: list[str] = []
     warnings: list[str] = []
+    # Keep only expected fields that are absent from the combined table.
     missing_columns = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
     if missing_columns:
         errors.append(f"Required columns missing: {', '.join(missing_columns)}")
@@ -85,6 +92,7 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
     elif row_count < minimum_rows:
         warnings.append(f"Only {row_count} observations; assignment target is at least {minimum_rows}")
 
+    # isna() marks missing cells; sum counts them and mean gives the fraction.
     missingness = {
         column: {
             "missing_count": int(frame[column].isna().sum()),
@@ -107,6 +115,9 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
         if column not in frame.columns:
             continue
         allow_fraction = column == "challenge_rating"
+        # Parse into a separate numeric view so the source CSV remains untouched.
+        # Series.map applies the parser to every value; the lambda passes the
+        # column-specific rule for fractional challenge ratings.
         converted = frame[column].map(lambda value: parse_number(value, allow_fraction=allow_fraction))
         invalid_count = int((frame[column].notna() & converted.isna()).sum())
         if invalid_count:
@@ -126,6 +137,7 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
         if column not in numeric_frame:
             continue
         values = numeric_frame[column]
+        # Negative CR, HP, or ability scores are implausible. AC must be positive.
         if column in ("challenge_rating", "hit_points", "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"):
             bad_count = int((values < 0).sum())
         elif column == "armor_class":
@@ -138,12 +150,16 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
 
     duplicate_key_rows = 0
     if "key" in frame.columns:
+        # duplicated() returns True/False per row; keep=False marks every row
+        # participating in a repeat, not only the extra copies. sum() counts them.
         duplicate_key_rows = int(frame["key"].duplicated(keep=False).sum())
         if duplicate_key_rows:
             warnings.append(f"{duplicate_key_rows} rows have a duplicated API key; inspect before analysis")
 
     duplicate_name_source_rows = 0
     if {"name", "document_key"}.issubset(frame.columns):
+        # A name can legitimately recur in different books, so only flag a name
+        # repeated within the same source document.
         duplicate_name_source_rows = int(
             frame.duplicated(subset=["name", "document_key"], keep=False).sum()
         )
@@ -155,6 +171,8 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
 
     source_counts: list[dict[str, Any]] = []
     if "document_key" in frame.columns:
+        # value_counts groups identical source names; this comprehension turns
+        # that result into a list of dictionaries for the JSON report.
         source_counts = [
             {"document_key": str(source), "count": int(count)}
             for source, count in frame["document_key"].fillna("(missing)").value_counts().items()
@@ -182,6 +200,8 @@ def summarize(frame: pd.DataFrame, manifests: list[dict[str, Any]], minimum_rows
                 f"{missing_license_rows} rows lack API license metadata; check the source documents manually"
             )
 
+    # A manifest can reveal a truncated pull even when the resulting CSV looks
+    # internally consistent, so check completion and row totals as well.
     for manifest in manifests:
         expected = manifest.get("api_total_reported")
         acquired = manifest.get("records_acquired")

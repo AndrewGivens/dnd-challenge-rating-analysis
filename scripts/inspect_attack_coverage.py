@@ -10,12 +10,18 @@ from pathlib import Path
 from typing import Any
 
 
+# These phrases only identify descriptions worth screening; they do not prove
+# that an action is a damaging attack or that its damage is fully structured.
+# `|` means “or”; `\b` requires word boundaries so “to hit” is matched as a
+# phrase. re.IGNORECASE also matches capitalization variants in descriptions.
 ATTACK_WORDING = re.compile(r"attack roll|\bto hit\b|weapon attack|spell attack", re.IGNORECASE)
 DICE_WORDING = re.compile(r"\b\d+d\d+\b", re.IGNORECASE)
 
 
 def has_structured_attack(action: dict[str, Any]) -> bool:
     """Recognize the nested v2 attack form and the legacy direct fields."""
+    # Open5e v2 nests attack details; older records may put fields directly on
+    # the action. Accept both shapes while checking how often data is absent.
     attacks = action.get("attacks")
     if isinstance(attacks, list) and attacks:
         return True
@@ -24,6 +30,8 @@ def has_structured_attack(action: dict[str, Any]) -> bool:
 
 def has_structured_damage(action: dict[str, Any]) -> bool:
     """Check whether structured fields appear to describe damage, not just a hit."""
+    # A hit can have attack fields but no damage. Check that at least one nested
+    # attack has a positive dice count or nonzero damage bonus.
     def positive(value: Any) -> bool:
         try:
             return float(value or 0) > 0
@@ -50,15 +58,18 @@ def has_structured_damage(action: dict[str, Any]) -> bool:
 
 
 def inspect(raw_dir: Path, max_examples: int, document_keys: set[str] | None = None) -> dict[str, Any]:
+    # Read cached raw responses rather than requesting the API again.
     files = sorted(raw_dir.rglob("page_*.json"))
     if document_keys:
         # Ignore legacy one-off caches at the root of raw_dir; selected pulls
         # are stored under <document-key>/<timestamp>/page_*.json.
+        # Keep only pages stored under a requested document-key folder.
         files = [path for path in files if path.parent.parent.name in document_keys]
     if not files:
         raise FileNotFoundError(f"No cached page_*.json files under {raw_dir}")
 
     totals: Counter[str] = Counter()
+    # defaultdict creates a Counter automatically the first time a source is seen.
     per_source: dict[str, Counter[str]] = defaultdict(Counter)
     examples: list[dict[str, str]] = []
     creature_count = 0
@@ -66,11 +77,15 @@ def inspect(raw_dir: Path, max_examples: int, document_keys: set[str] | None = N
         payload = json.loads(path.read_text(encoding="utf-8"))
         for creature in payload.get("results", []):
             document = creature.get("document") or {}
+            # Prefer the record's source key; parents[1] is a folder-name fallback
+            # for cached API pages that do not include a document object.
             source = document.get("key") or path.parents[1].name
             if document_keys and source not in document_keys:
                 continue
             creature_count += 1
             actions = creature.get("actions") or []
+            # Count save-based dice language independently: it is a common
+            # damage path that does not look like an attack roll.
             for action in actions:
                 if not isinstance(action, dict):
                     continue
@@ -92,6 +107,8 @@ def inspect(raw_dir: Path, max_examples: int, document_keys: set[str] | None = N
                 else:
                     totals["missing_structured_attack_data"] += 1
                     per_source[source]["missing_structured_attack_data"] += 1
+                    # Keep a small review sample so the heuristic can be checked
+                    # manually instead of treating text matching as ground truth.
                     if len(examples) < max_examples:
                         examples.append(
                             {
@@ -104,6 +121,7 @@ def inspect(raw_dir: Path, max_examples: int, document_keys: set[str] | None = N
 
     attack_like = totals["attack_like_actions"]
     missing = totals["missing_structured_attack_data"]
+    # Convert Counter objects to regular dicts so json.dumps can serialize them.
     return {
         "raw_pages": len(files),
         "creatures_inspected": creature_count,

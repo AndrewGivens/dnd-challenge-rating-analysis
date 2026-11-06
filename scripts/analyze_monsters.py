@@ -19,6 +19,8 @@ from sklearn.model_selection import KFold, cross_val_predict
 
 
 FEATURES = [
+    # Model input columns: HP is log-transformed; other features stay on their
+    # original scales.
     "log_hit_points",
     "armor_class",
     "strength",
@@ -40,6 +42,9 @@ GROUP_COLORS = {"Wizards of the Coast": "#3569a8", "Kobold Press": "#b65f32"}
 
 
 def load_data(paths: list[Path]) -> pd.DataFrame:
+    """Combine source CSVs and prepare the fields shared by EDA and modeling."""
+    # Read each CSV, then stack the rows. sort=False keeps the existing column
+    # order and appends any extra columns found in one source file.
     frames = [pd.read_csv(path) for path in paths]
     frame = pd.concat(frames, ignore_index=True, sort=False)
     required = {"key", "name", "document_key", "challenge_rating", "hit_points", "armor_class"}
@@ -49,39 +54,63 @@ def load_data(paths: list[Path]) -> pd.DataFrame:
     numeric = ["challenge_rating", "hit_points", "armor_class", "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"]
     for column in numeric:
         if column in frame:
+            # CSV columns may load as text; convert valid values to numbers and
+            # turn unparseable values into NaN so later checks catch them.
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame["publisher_name"] = frame["publisher_name"].fillna("Unknown")
+    # The comparison treats the 2014 SRD as WotC and the four selected books as
+    # Kobold Press. This grouping is specific to the documents in this project.
+    # np.where is a vectorized if/else: assign one group label to each row.
     frame["source_group"] = np.where(
         frame["document_key"].eq("srd-2014"), "Wizards of the Coast", "Kobold Press"
     )
+    # log1p is log(1 + HP); adding one keeps the transform defined for zero HP.
     frame["log_hit_points"] = np.log1p(frame["hit_points"])
     return frame
 
 
 def fit_baseline(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Train on official SRD stats and compare held-out/third-party CRs to it."""
+    # .eq() creates a True/False mask; ~ flips it to select every non-SRD row.
     official = frame[frame["document_key"].eq("srd-2014")].copy()
     third_party = frame[~frame["document_key"].eq("srd-2014")].copy()
     if len(official) < 10 or third_party.empty:
         raise ValueError("Need at least 10 official SRD rows and some third-party rows")
+    # The first any() checks each column; the second asks whether any column
+    # contains at least one missing value among official training records.
     if official[FEATURES + ["challenge_rating"]].isna().any().any():
         raise ValueError("Model fields contain missing or invalid values; run validation and clean first")
 
+    # X is the table of predictor columns; y is the value the model learns to predict.
     x_official = official[FEATURES]
+    # The model target is also log(1 + CR), matching the HP transformation.
     y_log = np.log1p(official["challenge_rating"])
+    # Out-of-fold predictions give each official monster a prediction from a
+    # model that did not train on that row; the seed makes the split repeatable.
     cv = KFold(n_splits=5, shuffle=True, random_state=386)
+    # cross_val_predict fits on four folds and predicts the held-out fold until
+    # every official row has a prediction from a model that did not train on it.
     cv_prediction_log = cross_val_predict(LinearRegression(), x_official, y_log, cv=cv)
+    # Convert log(1 + CR) back to CR. Clamp negative log predictions to zero so
+    # predictions cannot imply a negative challenge rating.
     official_prediction = np.expm1(np.maximum(cv_prediction_log, 0))
 
+    # Fit the comparison model on all official data before predicting Kobold
+    # Press records; those records never contribute to model fitting.
     model = LinearRegression().fit(x_official, y_log)
     third_prediction = np.expm1(np.maximum(model.predict(third_party[FEATURES]), 0))
     official["predicted_cr"] = official_prediction
     third_party["predicted_cr"] = third_prediction
     official["prediction_method"] = "5-fold out-of-fold"
     third_party["prediction_method"] = "full official-baseline fit"
+    # Recombine the two prediction tables, then restore their original row order.
     frame_with_predictions = pd.concat([official, third_party]).sort_index()
+    # Positive residual = listed CR is higher than the baseline prediction.
     frame_with_predictions["cr_residual"] = (
         frame_with_predictions["challenge_rating"] - frame_with_predictions["predicted_cr"]
     )
+    # R-squared is evaluated on transformed CR; MAE is in CR units since
+    # official_prediction has already been converted back to that scale.
     metrics = {
         "official_cv_r2_log_cr": float(r2_score(y_log, cv_prediction_log)),
         "official_cv_mae_cr": float(mean_absolute_error(official["challenge_rating"], official_prediction)),
@@ -90,8 +119,10 @@ def fit_baseline(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
 
 
 def cr_bands(cr: pd.Series) -> pd.Series:
+    """Group CRs into broad plotting bands; this does not alter model inputs."""
     bins = [-0.000001, 0, 1, 4, 10, 16, 30.000001]
     labels = ["0", "(0, 1]", "(1, 4]", "(4, 10]", "(10, 16]", "(16, 30]"]
+    # pd.cut assigns each value to one interval and returns labeled categories.
     return pd.cut(cr, bins=bins, labels=labels, include_lowest=True, right=True)
 
 
@@ -102,6 +133,8 @@ def create_figures(frame: pd.DataFrame, figures_dir: Path) -> None:
     # Share of monsters in each CR band helps compare the differently sized groups.
     plotted = frame.copy()
     plotted["cr_band"] = cr_bands(plotted["challenge_rating"])
+    # crosstab counts each CR-band/source pair; column normalization changes
+    # counts into within-group proportions that sum to 1.
     distribution = pd.crosstab(plotted["cr_band"], plotted["source_group"], normalize="columns")
     distribution = distribution.reindex(["0", "(0, 1]", "(1, 4]", "(4, 10]", "(10, 16]", "(16, 30]"])
     ax = distribution.T.plot(
@@ -124,10 +157,13 @@ def create_figures(frame: pd.DataFrame, figures_dir: Path) -> None:
 
     # Plot HP and AC against CR; log1p x positions preserve fractional low CRs.
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.0), sharex=True)
+    # groupby yields one smaller DataFrame per publisher group for plotting.
     for group, group_frame in frame.groupby("source_group", sort=False):
         color = GROUP_COLORS.get(group, "#707070")
         x = np.log1p(group_frame["challenge_rating"])
         axes[0].scatter(x, group_frame["hit_points"], s=14, alpha=0.30, color=color, label=group, edgecolors="none")
+        # AC takes discrete values, so points overlap. This tiny seeded jitter
+        # is visual only; the analysis and summaries use the original AC column.
         jitter = np.random.default_rng(386).uniform(-0.12, 0.12, len(group_frame))
         axes[1].scatter(x, group_frame["armor_class"] + jitter, s=14, alpha=0.27, color=color, label=group, edgecolors="none")
     cr_ticks = np.array([0, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 30])
@@ -152,6 +188,8 @@ def create_figures(frame: pd.DataFrame, figures_dir: Path) -> None:
     residual_values = [frame.loc[frame["document_key"].eq(key), "cr_residual"].dropna().to_numpy() for key in order]
     labels = [SOURCE_LABELS.get(key, key) for key in order]
     fig, ax = plt.subplots(figsize=(10.5, 5.2))
+    # Hide outlier markers to keep the central distributions readable; all rows
+    # remain in residual_review.csv for individual inspection.
     boxes = ax.boxplot(residual_values, tick_labels=labels, patch_artist=True, showfliers=False, medianprops={"color": "#222222", "linewidth": 1.5})
     for i, key in enumerate(order):
         boxes["boxes"][i].set_facecolor("#6b91b3" if key == "srd-2014" else "#d78a62")
@@ -169,6 +207,8 @@ def create_figures(frame: pd.DataFrame, figures_dir: Path) -> None:
 
 
 def summarize(frame: pd.DataFrame, metrics: dict[str, float]) -> dict[str, Any]:
+    """Collect group summaries and checks that help qualify model comparisons."""
+    # Each groupby loop below processes one source or publisher group at a time.
     source_summary: dict[str, Any] = {}
     for source, subset in frame.groupby("document_key", sort=False):
         source_summary[str(source)] = {
@@ -208,15 +248,20 @@ def summarize(frame: pd.DataFrame, metrics: dict[str, float]) -> dict[str, Any]:
     official = frame[frame["document_key"].eq("srd-2014")]
     third_party = frame[~frame["document_key"].eq("srd-2014")]
     range_masks = []
+    # A prediction outside the official feature range is extrapolation. Count a
+    # Kobold record once if any one of its model features falls outside range.
     for feature in FEATURES:
         base_feature = "hit_points" if feature == "log_hit_points" else feature
         values = np.log1p(official[base_feature]) if feature == "log_hit_points" else official[base_feature]
         outside = (third_party[feature] < values.min()) | (third_party[feature] > values.max())
         range_masks.append(outside)
+    # Stack the per-feature True/False masks as columns, then mark a record when
+    # any mask is True. Each third-party monster is counted at most once.
     outside_any = pd.concat(range_masks, axis=1).any(axis=1) if range_masks else pd.Series(False, index=third_party.index)
 
     return {
         "n_total": int(len(frame)),
+        # Convert pandas value_counts to a plain dict of source -> row count.
         "source_counts": {str(key): int(value) for key, value in frame["document_key"].value_counts().items()},
         "group_summary": group_summary,
         "source_summary": source_summary,
@@ -242,6 +287,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("data/processed"))
     args = parser.parse_args()
 
+    # Workflow: load -> fit the official baseline -> create figures and summaries.
     frame = load_data(args.csv)
     frame_with_predictions, metrics = fit_baseline(frame)
     create_figures(frame_with_predictions, args.figures_dir)
@@ -249,6 +295,8 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "eda_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
     review_columns = ["key", "name", "document_key", "challenge_rating", "predicted_cr", "cr_residual", "prediction_method"]
+    # Add absolute residuals for ranking, sort the biggest differences first,
+    # then select just the columns useful for manually reviewing those monsters.
     frame_with_predictions.assign(abs_residual=frame_with_predictions["cr_residual"].abs()).sort_values(
         "abs_residual", ascending=False
     )[review_columns].to_csv(args.output_dir / "residual_review.csv", index=False)
